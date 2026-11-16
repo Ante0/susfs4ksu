@@ -1,0 +1,85 @@
+
+name: Sync GitLab Upstream
+
+on:
+  schedule:
+    # Check every 6 hours
+    - cron: '0 */6 * * *'
+
+  # Allow manual execution
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Prevent overlapping synchronization runs
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Synchronize upstream
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout GitHub repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Use a PAT if you want the sync push to trigger
+          # other GitHub Actions workflows.
+          token: ${{ secrets.MIRROR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Configure upstream
+        env:
+          UPSTREAM_URL: ${{ vars.UPSTREAM_URL }}
+        run: |
+          if [ -z "$UPSTREAM_URL" ]; then
+            echo "::error::UPSTREAM_URL repository variable is missing"
+            exit 1
+          fi
+
+          git remote add upstream "$UPSTREAM_URL"
+
+      - name: Fetch upstream changes
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          echo "Fetching upstream branches and tags..."
+
+          if [ -n "$GITLAB_TOKEN" ]; then
+            AUTH_HEADER="$(printf 'oauth2:%s' "$GITLAB_TOKEN" | base64 -w0)"
+
+            git -c http.extraheader="AUTHORIZATION: Basic ${AUTH_HEADER}" \
+              fetch --prune upstream \
+              '+refs/heads/*:refs/remotes/upstream/*' \
+              '+refs/tags/*:refs/remotes/upstream-tags/*'
+          else
+            git fetch --prune upstream \
+              '+refs/heads/*:refs/remotes/upstream/*' \
+              '+refs/tags/*:refs/remotes/upstream-tags/*'
+          fi
+
+          echo "Upstream fetch completed."
+
+      - name: Push upstream branches and tags
+        run: |
+          set -euo pipefail
+
+          echo "Pushing upstream branches to GitHub..."
+
+          git push --atomic origin \
+            'refs/remotes/upstream/*:refs/heads/*' \
+            'refs/remotes/upstream-tags/*:refs/tags/*'
+
+          echo "Synchronization completed successfully."
+
